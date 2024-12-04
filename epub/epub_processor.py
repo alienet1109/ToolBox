@@ -21,7 +21,7 @@ def extract_text_by_bookmark(book, start_href, end_href = ""):
             if start_name in item.file_name:
                 result = chardet.detect(item.get_content())
                 encoding = result['encoding'] if result else 'utf-8'
-                soup = BeautifulSoup(item.get_content(), 'html.parser',from_encoding=encoding)
+                soup = BeautifulSoup(item.get_content(), 'lxml',from_encoding=encoding)
                 return extract_text_between_anchors(soup,start_anchor,end_anchor)
         print("href not found.")
         return ""   
@@ -33,7 +33,7 @@ def extract_text_by_bookmark(book, start_href, end_href = ""):
             # 解析 HTML 内容
             result = chardet.detect(item.get_content())
             encoding = result['encoding'] if result else 'utf-8'
-            soup = BeautifulSoup(item.get_content(), 'html.parser',from_encoding = encoding)
+            soup = BeautifulSoup(item.get_content(), 'lxml',from_encoding = encoding)
             # 如果是锚点 (#)，提取对应部分
             if start_anchor:
                 text += extract_text_after_anchor(soup,start_anchor)
@@ -44,13 +44,13 @@ def extract_text_by_bookmark(book, start_href, end_href = ""):
             if end_anchor:
                 result = chardet.detect(item.get_content())
                 encoding = result['encoding'] if result else 'utf-8'
-                soup = BeautifulSoup(item.get_content(), 'html.parser',from_encoding = encoding)
+                soup = BeautifulSoup(item.get_content(), 'lxml',from_encoding = encoding)
                 text += extract_text_before_anchor(soup,end_anchor)
                 
         elif flag:
             result = chardet.detect(item.get_content())
             encoding = result['encoding'] if result else 'utf-8'
-            soup = BeautifulSoup(item.get_content(), 'html.parser',from_encoding = encoding)
+            soup = BeautifulSoup(item.get_content(), 'lxml',from_encoding = encoding)
             text += soup.get_text()
     return text
             
@@ -80,7 +80,7 @@ def extract_text_before_anchor(soup, anchor):
     element = soup.find(id=anchor)
     if not element:
         print("Anchor not found in the document.")
-        return ""
+        return soup.get_text()
     
     result = []
     
@@ -151,7 +151,6 @@ def split_text_by_bookmarks(book):
             "title":title,
             "content":extract_text_by_bookmark(book,href,end_href)
         })
-        print(title)
     return chapters
 
 def save_json_file(path,target):
