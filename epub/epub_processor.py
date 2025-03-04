@@ -3,8 +3,8 @@ from ebooklib import epub
 from bs4 import BeautifulSoup
 import os
 import json
-
 import chardet
+
 def extract_text_by_bookmark(book, start_href, end_href = ""):
     """
     end_href: 搜索截止处。若为空字符串则直接搜索到结尾
@@ -148,6 +148,7 @@ def split_text_by_bookmarks(book):
     for i,(title,href) in enumerate(bookmarks):
         end_href = bookmarks[i+1][1] if i < n-1 else ""
         chapters.append({
+            "idx":i+1,
             "title":title,
             "content":extract_text_by_bookmark(book,href,end_href)
         })
