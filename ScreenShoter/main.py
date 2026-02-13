@@ -47,14 +47,16 @@ class RegionsConfig:
 class AppConfig:
     save_dir: Optional[str] = None
     mode: str = "with_header"  # "with_header" or "normal"
-    hotkey_start: str = "F2"   # 清空缓存（开始新一轮）键
-    hotkey_capture: str = "F3"
-    hotkey_stop: str = "F4"
+    hotkey_start: str = "F1"    # 清空缓存（开始新一轮）键
+    hotkey_header: str = "F2"   # 截取头图（大范围），任意时刻追加一张大图
+    hotkey_capture: str = "F3"  # 普通截图键
+    hotkey_stop: str = "F4"     # 停止并拼接保存
     only_clipboard: bool = False
     regions: RegionsConfig = field(default_factory=RegionsConfig)
 
     def to_dict(self):
         d = asdict(self)
+        # dataclasses 的嵌套需要手动展开一下
         d["regions"] = {
             "region_large": self.regions.region_large,
             "region_small": self.regions.region_small,
@@ -71,7 +73,8 @@ class AppConfig:
         return AppConfig(
             save_dir=data.get("save_dir"),
             mode=data.get("mode", "with_header"),
-            hotkey_start=data.get("hotkey_start", "F2"),
+            hotkey_start=data.get("hotkey_start", "F1"),
+            hotkey_header=data.get("hotkey_header", "F2"),
             hotkey_capture=data.get("hotkey_capture", "F3"),
             hotkey_stop=data.get("hotkey_stop", "F4"),
             only_clipboard=data.get("only_clipboard", False),
@@ -95,11 +98,13 @@ class RegionSelector(QWidget):
         self.current = QPoint()
         self.selecting = False
         self.cross_pos = QPoint(-1, -1)
+        # 抓取当前屏幕作为背景，这样不会是纯黑
         screen = QGuiApplication.primaryScreen()
         self.background = screen.grabWindow(0) if screen is not None else None
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            # 在 Qt6 中优先使用 position()，避免 pos() 的弃用警告
             pos = event.position().toPoint()
             self.origin = pos
             self.current = pos
@@ -173,6 +178,7 @@ class RegionSelector(QWidget):
 class HotkeySignals(QObject):
     start_signal = Signal()
     capture_signal = Signal()
+    header_signal = Signal()   # 截取头图（任意时刻追加一张大图）
     stop_signal = Signal()
     hotkey_captured = Signal(str, object)  # hotkey, target QLineEdit
 
@@ -201,6 +207,7 @@ class MainWindow(QMainWindow):
         self.hotkey_signals = HotkeySignals()
         self.hotkey_signals.start_signal.connect(self.on_hotkey_start)
         self.hotkey_signals.capture_signal.connect(self.on_hotkey_capture)
+        self.hotkey_signals.header_signal.connect(self.on_hotkey_header)
         self.hotkey_signals.stop_signal.connect(self.on_hotkey_stop)
         self.hotkey_signals.hotkey_captured.connect(self.on_hotkey_captured)
         self.hotkey_handles = []
@@ -304,8 +311,13 @@ class MainWindow(QMainWindow):
         self.label_small_region = QLineEdit()
         self.label_small_region.setReadOnly(True)
 
+        self.btn_align_small_to_large = QPushButton("令小范围左右边缘与大范围对齐")
+        self.btn_align_small_to_large.setToolTip("将小范围的左边缘和宽度设为与大范围一致，避免截出的图错位或有白边")
+        self.btn_align_small_to_large.clicked.connect(self.align_small_region_to_large)
+
         region_layout.addRow(self.btn_set_large, self.label_large_region)
         region_layout.addRow(self.btn_set_small, self.label_small_region)
+        region_layout.addRow(self.btn_align_small_to_large)
         layout.addWidget(region_box)
 
         self.update_region_labels()
@@ -360,7 +372,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
 
         info_label = QLabel("说明：快捷键基于 keyboard 库，全局生效。\n"
-                            "建议使用功能键（如 F2/F3/F4）或组合键（如 ctrl+alt+a）。")
+                            "默认：F1 开始/清空、F2 截取头图、F3 截图、F4 停止/拼接保存。")
         layout.addWidget(info_label)
 
         # 未保存提示（红字），仅在有改动且未保存时显示
@@ -372,14 +384,16 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         self.edit_hotkey_start = QLineEdit(self.config.hotkey_start)
         self.edit_hotkey_capture = QLineEdit(self.config.hotkey_capture)
+        self.edit_hotkey_header = QLineEdit(self.config.hotkey_header)
         self.edit_hotkey_stop = QLineEdit(self.config.hotkey_stop)
 
         # 监听输入变化，标记为“有未保存改动”
         self.edit_hotkey_start.textChanged.connect(self.mark_hotkey_dirty)
         self.edit_hotkey_capture.textChanged.connect(self.mark_hotkey_dirty)
+        self.edit_hotkey_header.textChanged.connect(self.mark_hotkey_dirty)
         self.edit_hotkey_stop.textChanged.connect(self.mark_hotkey_dirty)
 
-        # 为每个快捷键行增加“录制”按钮，通过监听键盘获取组合键
+        # 为每个快捷键行增加“录制”按钮
         row_start = QHBoxLayout()
         row_start.addWidget(self.edit_hotkey_start)
         btn_record_start = QPushButton("录制")
@@ -392,6 +406,12 @@ class MainWindow(QMainWindow):
         btn_record_capture.clicked.connect(lambda: self.record_hotkey(self.edit_hotkey_capture))
         row_capture.addWidget(btn_record_capture)
 
+        row_header = QHBoxLayout()
+        row_header.addWidget(self.edit_hotkey_header)
+        btn_record_header = QPushButton("录制")
+        btn_record_header.clicked.connect(lambda: self.record_hotkey(self.edit_hotkey_header))
+        row_header.addWidget(btn_record_header)
+
         row_stop = QHBoxLayout()
         row_stop.addWidget(self.edit_hotkey_stop)
         btn_record_stop = QPushButton("录制")
@@ -399,6 +419,7 @@ class MainWindow(QMainWindow):
         row_stop.addWidget(btn_record_stop)
 
         form.addRow("开始/清空键：", self._wrap_row_widget(row_start))
+        form.addRow("截取头图键：", self._wrap_row_widget(row_header))
         form.addRow("截图键：", self._wrap_row_widget(row_capture))
         form.addRow("停止/拼接保存键：", self._wrap_row_widget(row_stop))
 
@@ -410,6 +431,17 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
         return widget
+
+    def align_small_region_to_large(self):
+        """将小范围的横向坐标（x、宽度）与大范围一致，纵向（y、高度）保持不变，便于截出的图精准横向对齐。"""
+        if not self.config.regions.region_large or not self.config.regions.region_small:
+            QMessageBox.warning(self, "无法对齐", "请先分别设定大范围和小范围后再使用此按钮。")
+            return
+        lx, ly, lw, lh = self.config.regions.region_large
+        sx, sy, sw, sh = self.config.regions.region_small
+        self.config.regions.region_small = (lx, sy, lw, sh)
+        self.update_region_labels()
+        self.save_config()
 
     def update_region_labels(self):
         if self.config.regions.region_large:
@@ -483,46 +515,51 @@ class MainWindow(QMainWindow):
         try:
             h_start = keyboard.add_hotkey(self.config.hotkey_start, lambda: self.hotkey_signals.start_signal.emit())
             h_capture = keyboard.add_hotkey(self.config.hotkey_capture, lambda: self.hotkey_signals.capture_signal.emit())
+            h_header = keyboard.add_hotkey(self.config.hotkey_header, lambda: self.hotkey_signals.header_signal.emit())
             h_stop = keyboard.add_hotkey(self.config.hotkey_stop, lambda: self.hotkey_signals.stop_signal.emit())
-            self.hotkey_handles.extend([h_start, h_capture, h_stop])
+            self.hotkey_handles.extend([h_start, h_capture, h_header, h_stop])
         except Exception as e:
             QMessageBox.warning(self, "快捷键注册失败", f"注册全局快捷键失败：\n{e}\n"
                                                       f"可能需要以管理员权限运行程序。")
 
     def on_save_hotkeys_clicked(self):
-        # 先读取用户输入的新热键字符串
-        new_start = self.edit_hotkey_start.text().strip() or "F2"
+        # 先读取用户输入的新热键字符串（默认 F1/F2/F3/F4）
+        new_start = self.edit_hotkey_start.text().strip() or "F1"
+        new_header = self.edit_hotkey_header.text().strip() or "F2"
         new_capture = self.edit_hotkey_capture.text().strip() or "F3"
         new_stop = self.edit_hotkey_stop.text().strip() or "F4"
 
         # 记住旧设置，方便恢复
         old_start = self.config.hotkey_start
+        old_header = self.config.hotkey_header
         old_capture = self.config.hotkey_capture
         old_stop = self.config.hotkey_stop
 
-        # 先验证新热键是否合法（通过 keyboard 尝试注册再立即移除）
-        if not self.validate_hotkeys(new_start, new_capture, new_stop):
-            # 如果旧配置本身也非法，则退回默认 F2/F3/F4
-            if not self.validate_hotkeys(old_start, old_capture, old_stop, silent=True):
+        # 先验证新热键是否合法（四键互不相同且可注册）
+        if not self.validate_hotkeys(new_header, new_start, new_capture, new_stop):
+            # 如果旧配置本身也非法，则退回默认 F1/F2/F3/F4
+            if not self.validate_hotkeys(old_header, old_start, old_capture, old_stop, silent=True):
                 QMessageBox.warning(
                     self,
                     "快捷键已重置",
-                    "检测到原有快捷键配置也不合法，已自动恢复为默认设置：F2 / F3 / F4。"
+                    "检测到原有快捷键配置也不合法，已自动恢复为默认设置：F1 / F2 / F3 / F4。"
                 )
-                self.config.hotkey_start = "F2"
+                self.config.hotkey_start = "F1"
+                self.config.hotkey_header = "F2"
                 self.config.hotkey_capture = "F3"
                 self.config.hotkey_stop = "F4"
-                self.edit_hotkey_start.setText("F2")
+                self.edit_hotkey_start.setText("F1")
+                self.edit_hotkey_header.setText("F2")
                 self.edit_hotkey_capture.setText("F3")
                 self.edit_hotkey_stop.setText("F4")
                 self.save_config()
                 self.register_hotkeys()
             else:
                 # 无效时还原文本框为旧值
+                self.edit_hotkey_header.setText(old_header)
                 self.edit_hotkey_start.setText(old_start)
                 self.edit_hotkey_capture.setText(old_capture)
                 self.edit_hotkey_stop.setText(old_stop)
-            # 恢复为旧值/默认后视为“已同步”，不再提示未保存
             self.hotkey_dirty = False
             if self.hotkey_hint_label is not None:
                 self.hotkey_hint_label.hide()
@@ -530,6 +567,7 @@ class MainWindow(QMainWindow):
 
         # 通过验证后再真正写入配置
         self.config.hotkey_start = new_start
+        self.config.hotkey_header = new_header
         self.config.hotkey_capture = new_capture
         self.config.hotkey_stop = new_stop
         self.config.only_clipboard = self.checkbox_only_clipboard.isChecked()
@@ -566,17 +604,16 @@ class MainWindow(QMainWindow):
         self.capturing_hotkey = False
         # textChanged 已经会标记 dirty，这里无需额外处理
 
-    def validate_hotkeys(self, start: str, capture: str, stop: str, silent: bool = False) -> bool:
-        """验证热键：1) 三个键不能重复；2) 通过 keyboard 实际尝试注册。"""
-        # 不允许三个热键有任何重复
-        if len({start, capture, stop}) < 3:
+    def validate_hotkeys(self, header: str, start: str, capture: str, stop: str, silent: bool = False) -> bool:
+        """验证热键：1) 四个键不能重复；2) 通过 keyboard 实际尝试注册。"""
+        if len({header, start, capture, stop}) < 4:
             if not silent:
-                QMessageBox.warning(self, "快捷键无效", "开始键、截图键、停止键不能相同，请设置为不同的键。")
+                QMessageBox.warning(self, "快捷键无效", "截取头图键、开始键、截图键、停止键不能相同，请设置为不同的键。")
             return False
 
-        # 再通过 keyboard 库实际尝试注册热键来验证格式是否合法
         temp_ids = []
         try:
+            temp_ids.append(keyboard.add_hotkey(header, lambda: None))
             temp_ids.append(keyboard.add_hotkey(start, lambda: None))
             temp_ids.append(keyboard.add_hotkey(capture, lambda: None))
             temp_ids.append(keyboard.add_hotkey(stop, lambda: None))
@@ -622,8 +659,20 @@ class MainWindow(QMainWindow):
             else:
                 self.capture_normal_mode()
         except Exception as e:
-            # 避免在游戏中弹出窗口干扰，这里只在控制台打印
             print("截图失败：", e, file=sys.stderr)
+
+    def on_hotkey_header(self):
+        """截取头图：任意时刻追加一张大范围图，用于自由排列顺序（如 大图、小图、大图、小图…）。"""
+        if not self.config.regions.region_large:
+            return
+        try:
+            x, y, w, h = self.config.regions.region_large
+            img = self.grab_region(x, y, w, h)
+            if img:
+                self.frames.append(img)
+                self.update_cache_view()
+        except Exception as e:
+            print("截取头图失败：", e, file=sys.stderr)
 
     def on_hotkey_stop(self):
         if not self.frames:
@@ -669,21 +718,17 @@ class MainWindow(QMainWindow):
         if not self.config.regions.region_large or not self.config.regions.region_small:
             QMessageBox.warning(self, "未设置范围", "带头图模式需要先设置大范围和小范围。")
             return
-        if not self.first_shot_done:
-            # 先截大范围
+        # 规则：截图池为空时截一张大图，只要池非空就截小图
+        if not self.frames:
+            # 先截一张大范围
             x, y, w, h = self.config.regions.region_large
-            img = self.grab_region(x, y, w, h)
-            if img:
-                self.frames.append(img)
-                self.first_shot_done = True
-                self.update_cache_view()
         else:
-            # 再截小范围
+            # 池中已有内容时，只截小范围（台词）
             x, y, w, h = self.config.regions.region_small
-            img = self.grab_region(x, y, w, h)
-            if img:
-                self.frames.append(img)
-                self.update_cache_view()
+        img = self.grab_region(x, y, w, h)
+        if img:
+            self.frames.append(img)
+            self.update_cache_view()
 
     def capture_normal_mode(self):
         if not self.config.regions.region_small:
